@@ -13,6 +13,10 @@
   подписанным чатам. Доступ **только по секретному коду**: `/start <LEADS_CODE>` (в заявках
   телефоны). Повтор той же заявки дедуплицируется по id (`leads:sent:<id>:<chat>`). Если
   подписчики есть, но доставка не удалась из-за Telegram — отвечает 502, и Laravel повторяет.
+  **Копии заявок бот не хранит**: источник правды — база сайта. «Последние заявки» бот читает
+  оттуда: `GET https://3x3.team/api/bot/leads?limit=N` с тем же Bearer `RELAY_SECRET`
+  (`src/site.ts`; сайт лежит — бот так и скажет). Поэтому история видна и для заявок, пришедших
+  до подключения бота.
 
 ## Интерфейс бота
 
@@ -43,8 +47,9 @@ enum/namespace/parameter properties), импорты с `.ts`, `import type`, б
 ## KV и секреты
 
 - `SUBSCRIBERS` KV: голые числовые ключи (chat id) = подписка на алерты (`on`/`off`),
-  `history` = JSON инцидентов, `leads:chat:<id>` = подписка на заявки, `leads:recent` = последние 20,
-  `leads:sent:*` = дедуп (TTL 2 суток). Cron шлёт алерты только на ключи вида `-?\d+`.
+  `history` = JSON инцидентов, `leads:chat:<id>` = доступ к заявкам (`on`/`off`),
+  `leads:sent:*` = дедуп (TTL 2 суток), `meta:profile` = версия профиля бота. Старый ключ
+  `leads:recent` больше не используется (можно удалить из KV). Cron шлёт алерты только на ключи вида `-?\d+`.
 - Secrets (`wrangler secret put`, не в репо): `TELEGRAM_BOT_TOKEN`, `RELAY_SECRET`, `LEADS_CODE`.
   Локально — `.dev.vars` (в `.gitignore`).
 

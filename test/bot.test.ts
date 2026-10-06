@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { UserFromGetMe } from "grammy/types";
 import { createBot } from "../src/bot.ts";
 import type { Env } from "../src/env.ts";
+import type { LeadPayload } from "../src/lead-types.ts";
 import { deliverLead, subscribedChats } from "../src/leads.ts";
 import { COMMANDS, ensureProfile, PROFILE_VERSION, type ProfileApi } from "../src/profile.ts";
 import { fakeKv } from "./helpers.ts";
@@ -17,10 +18,10 @@ interface Call {
 }
 
 // Real bot + real handlers; only the outgoing Telegram calls are intercepted.
-function harness() {
+function harness(fetchLeads: (env: Env) => Promise<LeadPayload[]> = async () => []) {
   const kv = fakeKv();
   const env: Env = { SUBSCRIBERS: kv, TELEGRAM_BOT_TOKEN: "1:x", LEADS_CODE: CODE, RELAY_SECRET: "s" };
-  const bot = createBot(env, botInfo);
+  const bot = createBot(env, botInfo, fetchLeads);
   const calls: Call[] = [];
   bot.api.config.use(async (_prev, method, payload) => {
     calls.push({ method, payload: payload as Record<string, unknown> });
@@ -128,15 +129,40 @@ test("a chat without the code cannot toggle or read leads", async () => {
   assert.ok(h.calls.length > before && afterPress > before);
 });
 
-test("authorized chat gets recent leads, or an empty-state line", async () => {
-  const h = harness();
+test("authorized chat gets the site's recent leads (button and /lastleads), or an empty-state line", async () => {
+  let fromSite: LeadPayload[] = [];
+  const h = harness(async () => fromSite);
   await h.command(`/start ${CODE}`);
   await h.press("m:last");
   assert.equal(h.last("sendMessage")?.payload.text, "Заявок пока нет.");
 
-  await deliverLead({ lead: { id: 7, name: "Иван", phone: "+7 900" }, kv: h.kv, send: async () => {} });
+  // a lead that never went through the bot: it only exists in the site's database
+  fromSite = [{ id: 7, name: "Иван", phone: "+7 900" }];
   await h.command("/lastleads");
   assert.match(String(h.last("sendMessage")?.payload.text), /Иван/);
+  await h.press("m:last");
+  assert.match(String(h.last("sendMessage")?.payload.text), /Иван/);
+});
+
+test("when the site is unreachable the chat is told so instead of seeing an empty list", async () => {
+  const h = harness(async () => {
+    throw new Error("site responded 502");
+  });
+  await h.command(`/start ${CODE}`);
+  await h.press("m:last");
+  assert.match(String(h.last("sendMessage")?.payload.text), /сайт не отвечает/);
+});
+
+test("a chat without the code never triggers a site request", async () => {
+  let called = 0;
+  const h = harness(async () => {
+    called++;
+    return [];
+  });
+  await h.command("/start");
+  await h.command("/lastleads");
+  await h.press("m:last");
+  assert.equal(called, 0);
 });
 
 test("hidden /stop_leads mutes but keeps access", async () => {

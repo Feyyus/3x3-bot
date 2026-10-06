@@ -1,12 +1,10 @@
 import type { LeadPayload } from "./lead-types.ts";
 import { formatLead } from "./format.ts";
 
-export const RECENT_MAX = 20;
 // Laravel retries for ~1h at most; keep the dedupe marker well beyond that.
 export const DEDUPE_TTL_SECONDS = 2 * 24 * 3600;
 
 const CHAT_PREFIX = "leads:chat:";
-const RECENT_KEY = "leads:recent";
 
 export const chatKey = (chatId: number | string): string => `${CHAT_PREFIX}${chatId}`;
 export const dedupeKey = (leadId: number | string, chatId: number | string): string => `leads:sent:${leadId}:${chatId}`;
@@ -38,11 +36,6 @@ export function parseLead(body: unknown): LeadPayload | null {
     leadUrl: clip(b.leadUrl, 500),
     briefUrl: clip(b.briefUrl, 500),
   };
-}
-
-// newest first, one entry per lead id (Laravel may resend the same lead)
-export function addRecent(recent: LeadPayload[], lead: LeadPayload, max = RECENT_MAX): LeadPayload[] {
-  return [lead, ...recent.filter((l) => String(l.id) !== String(lead.id))].slice(0, max);
 }
 
 // Telegram says the chat is gone for good -> stop sending to it.
@@ -97,14 +90,9 @@ export async function subscribedChats(kv: KVNamespace): Promise<string[]> {
   return ids.filter((_, i) => states[i] === "on");
 }
 
-export async function recentLeads(kv: KVNamespace): Promise<LeadPayload[]> {
-  return (await kv.get<LeadPayload[]>(RECENT_KEY, "json")) ?? [];
-}
-
 export type Outcome = "skipped" | "dead" | "transient" | "delivered";
 
 export interface DeliveryResult {
-  stored: true;
   attempted: number;
   delivered: number;
   skipped: number;
@@ -113,7 +101,8 @@ export interface DeliveryResult {
 }
 
 /**
- * Store the lead, then send it to every subscribed chat.
+ * Send the lead to every subscribed chat. Nothing is stored here: the lead itself
+ * lives in the site's database; only per-chat dedupe markers are kept.
  * `send(chatId, html)` throws on Telegram errors (grammY GrammyError/HttpError).
  */
 export async function deliverLead({
@@ -125,9 +114,6 @@ export async function deliverLead({
   kv: KVNamespace;
   send: (chatId: string, html: string) => Promise<unknown>;
 }): Promise<DeliveryResult> {
-  // Store first: even with nobody subscribed the lead is visible via /lastleads.
-  await kv.put(RECENT_KEY, JSON.stringify(addRecent(await recentLeads(kv), lead)));
-
   const targets = await subscribedChats(kv);
   const text = formatLead(lead);
 
@@ -149,7 +135,6 @@ export async function deliverLead({
   await Promise.all(dead.map((o) => unsubscribeChat(kv, o.chatId)));
 
   return {
-    stored: true,
     attempted: targets.length,
     delivered: count("delivered"),
     skipped: count("skipped"),

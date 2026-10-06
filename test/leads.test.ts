@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addRecent, deliverLead, isPermanentChatError, parseLead, shouldRetry, type DeliveryResult } from "../src/leads.ts";
+import { deliverLead, isPermanentChatError, parseLead, shouldRetry, type DeliveryResult } from "../src/leads.ts";
 import { isChatKey } from "../src/monitor.ts";
 import { bearerMatches, safeEqual } from "../src/security.ts";
 import type { LeadPayload } from "../src/lead-types.ts";
@@ -17,13 +17,6 @@ test("parseLead requires an id and tolerates everything else missing", () => {
   assert.deepEqual(parseLead({ id: 3 })?.id, 3);
   assert.equal(parseLead({ id: 3, name: 42 })?.name, undefined);
   assert.equal(parseLead({ id: 3, name: "  Аня  " })?.name, "Аня");
-});
-
-test("addRecent puts the newest first and dedupes by id", () => {
-  const out = addRecent([{ id: 1 }, { id: 2 }], { id: 1, name: "again" });
-  assert.deepEqual(out.map((l) => l.id), [1, 2]);
-  assert.equal(out[0]?.name, "again");
-  assert.equal(addRecent(Array.from({ length: 20 }, (_, i) => ({ id: i + 10 })), { id: 1 }).length, 20);
 });
 
 test("isPermanentChatError: 403 and dead chats are permanent, network errors are not", () => {
@@ -52,12 +45,12 @@ test("deliverLead sends to every subscriber and dedupes a retry", async () => {
   assert.equal(shouldRetry(retry), false);
 });
 
-test("deliverLead with nobody subscribed stores the lead and does not ask for a retry", async () => {
+test("deliverLead with nobody subscribed sends nothing, keeps no copy and does not ask for a retry", async () => {
   const kv = fakeKv();
-  const result = await deliverLead({ lead, kv, send: async () => {} });
+  const result = await deliverLead({ lead, kv, send: async () => assert.fail("nobody to send to") });
   assert.equal(result.attempted, 0);
   assert.equal(shouldRetry(result), false);
-  assert.deepEqual(await kv.get("leads:recent", "json"), [lead]);
+  assert.equal(await kv.get("leads:recent"), null, "the site database is the only copy of a lead");
 });
 
 test("deliverLead unsubscribes dead chats and asks for a retry on transient failures", async () => {
@@ -77,7 +70,7 @@ test("deliverLead unsubscribes dead chats and asks for a retry on transient fail
 });
 
 test("shouldRetry is false once someone got the lead", () => {
-  const partial: DeliveryResult = { stored: true, attempted: 2, delivered: 1, skipped: 0, transientFailures: 1, removed: 0 };
+  const partial: DeliveryResult = { attempted: 2, delivered: 1, skipped: 0, transientFailures: 1, removed: 0 };
   assert.equal(shouldRetry(partial), false);
 });
 

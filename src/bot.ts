@@ -6,7 +6,9 @@ import { safeEqual } from "./security.ts";
 import { formatRecent } from "./format.ts";
 import { formatHistory, formatStatus } from "./messages.ts";
 import { CB, menuKeyboard, menuText, type MenuState } from "./ui.ts";
-import { leadsState, recentLeads, setLeadsState, subscribeChat } from "./leads.ts";
+import { leadsState, setLeadsState, subscribeChat } from "./leads.ts";
+import { fetchRecentLeads } from "./site.ts";
+import type { LeadPayload } from "./lead-types.ts";
 
 export const HTML = { parse_mode: "HTML", link_preview_options: { is_disabled: true } } as const;
 
@@ -46,9 +48,18 @@ async function sendHistory(ctx: Context, env: Env): Promise<void> {
 }
 
 // Only for chats that entered the code; everyone else gets no reply.
-async function sendLastLeads(ctx: Context, env: Env): Promise<void> {
+// Leads come from the site's database, so this works for leads older than the bot.
+async function sendLastLeads(ctx: Context, env: Env, fetchLeads: FetchLeads): Promise<void> {
   if (!ctx.chat || (await leadsState(env.SUBSCRIBERS, ctx.chat.id)) === null) return;
-  const messages = formatRecent(await recentLeads(env.SUBSCRIBERS));
+  let leads: LeadPayload[];
+  try {
+    leads = await fetchLeads(env);
+  } catch (err) {
+    console.error("recent leads failed", err instanceof Error ? err.message : String(err));
+    await ctx.reply("Не удалось получить заявки: сайт не отвечает. Попробуйте позже.");
+    return;
+  }
+  const messages = formatRecent(leads);
   if (messages.length === 0) {
     await ctx.reply("Заявок пока нет.");
     return;
@@ -62,7 +73,9 @@ async function toggleAlerts(env: Env, chatId: ChatId): Promise<boolean> {
   return wasOff;
 }
 
-export function createBot(env: Env, botInfo?: UserFromGetMe): Bot {
+type FetchLeads = (env: Env) => Promise<LeadPayload[]>;
+
+export function createBot(env: Env, botInfo?: UserFromGetMe, fetchLeads: FetchLeads = fetchRecentLeads): Bot {
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN, botInfo ? { botInfo } : undefined);
 
   // Алерты включены по умолчанию. `/start <код>` дополнительно открывает заявки; неверный
@@ -81,7 +94,7 @@ export function createBot(env: Env, botInfo?: UserFromGetMe): Bot {
   bot.command("history", (ctx) => sendHistory(ctx, env));
 
   // Скрытые алиасы (в меню команд их нет, всё то же есть кнопками).
-  bot.command("lastleads", (ctx) => sendLastLeads(ctx, env));
+  bot.command("lastleads", (ctx) => sendLastLeads(ctx, env, fetchLeads));
   bot.command("stop_leads", async (ctx) => {
     if ((await leadsState(env.SUBSCRIBERS, ctx.chat.id)) === null) return;
     await setLeadsState(env.SUBSCRIBERS, ctx.chat.id, "off");
@@ -116,7 +129,7 @@ export function createBot(env: Env, botInfo?: UserFromGetMe): Bot {
         return;
       case CB.lastLeads:
         await ctx.answerCallbackQuery();
-        await sendLastLeads(ctx, env);
+        await sendLastLeads(ctx, env, fetchLeads);
         return;
       case CB.status:
         await ctx.answerCallbackQuery("Проверяю…");
