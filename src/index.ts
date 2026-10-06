@@ -4,6 +4,8 @@ import { createBot, HTML } from "./bot.ts";
 import { checkServerHealth, checkSites, isChatKey, logIncident } from "./monitor.ts";
 import { deliverLead, parseLead, shouldRetry } from "./leads.ts";
 import { bearerMatches } from "./security.ts";
+import { formatAlert } from "./messages.ts";
+import { ensureProfile } from "./profile.ts";
 
 const MAX_BODY_BYTES = 16 * 1024;
 
@@ -56,6 +58,8 @@ export default {
 
   // Cron trigger — раз в 10 минут, молча если всё ок, шлёт всем подписанным при падении.
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
+    await ensureProfile(env);
+
     const [results, health] = await Promise.all([checkSites(), checkServerHealth()]);
     const down = results.filter((r) => !r.ok);
 
@@ -72,14 +76,7 @@ export default {
 
     await logIncident(env, down, health);
 
-    const parts: string[] = [];
-    if (down.length > 0) {
-      parts.push("⚠️ Проблема с сайтом:\n" + down.map((r) => `${r.url} — ${r.code}`).join("\n"));
-    }
-    if (!health.ok) {
-      parts.push("⚠️ Рабочая станция: " + (health.reason ?? health.warnings?.join(", ")));
-    }
-    const text = parts.join("\n\n");
+    const text = formatAlert(down, health);
 
     const list = await env.SUBSCRIBERS.list();
     for (const key of list.keys) {
@@ -89,7 +86,7 @@ export default {
       await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: key.name, text }),
+        body: JSON.stringify({ chat_id: key.name, text, parse_mode: "HTML", link_preview_options: { is_disabled: true } }),
       });
     }
   },

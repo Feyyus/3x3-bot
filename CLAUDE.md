@@ -10,18 +10,32 @@
   кто нажал `/start`.
 - **Заявки с сайта.** Laravel (`3x3-site-laravel`, джоба `SendLeadToTelegram`) шлёт
   `POST /lead` с `Authorization: Bearer <RELAY_SECRET>`; Worker сохраняет заявку и рассылает
-  подписанным чатам. Подписка **только по секретному коду**: `/start <LEADS_CODE>` (в заявках
-  телефоны). `/lastleads` — последние 5, `/stop_leads` — отписка. Повтор той же заявки
-  дедуплицируется по id (`leads:sent:<id>:<chat>`). Если подписчики есть, но доставка не
-  удалась из-за Telegram — отвечает 502, и Laravel повторяет.
+  подписанным чатам. Доступ **только по секретному коду**: `/start <LEADS_CODE>` (в заявках
+  телефоны). Повтор той же заявки дедуплицируется по id (`leads:sent:<id>:<chat>`). Если
+  подписчики есть, но доставка не удалась из-за Telegram — отвечает 502, и Laravel повторяет.
+
+## Интерфейс бота
+
+Один экран-меню (`/start`, `/menu`, `src/ui.ts`): два переключателя (алерты, заявки), кнопки
+«Последние заявки», «Статус», «История». Кнопки правят это же сообщение. Блок заявок виден только
+чатам, которые вводили код (неподписанный чат не видит и не угадывает, что код есть). «Выключить
+заявки» только мьютит (`leads:chat:<id>` = `off`), доступ остаётся; полностью доступ снимается
+только когда Telegram говорит, что чата нет. Скрытые алиасы: `/lastleads`, `/stop_leads`.
+Все сообщения HTML в одном стиле (`format.ts` → `header`/`row`, `messages.ts`), время по МСК.
+
+Профиль бота (меню команд, описания) ставит `ensureProfile` (`src/profile.ts`) из cron, один раз на
+`PROFILE_VERSION` (флаг KV `meta:profile`). Поменял команды или тексты — подними версию и задеплой.
+Имя бота («3x3 Bot») меняется только вручную в BotFather.
 
 `staffing-leads` — отдельный сервис со своим ботом, с этим Worker-ом не связан.
 
 ## Структура
 
-`src/index.ts` — роутинг и cron; `bot.ts` — команды; `monitor.ts` — проверки; `leads.ts` —
-подписки/дедуп/доставка; `format.ts` — HTML-сообщения; `security.ts` — constant-time
-сравнение; `env.ts`, `lead-types.ts` — типы. Только erasable-синтаксис TS (без
+`src/index.ts` — роутинг и cron; `bot.ts` — обработчики; `ui.ts` — меню; `messages.ts` — алерт/статус/
+история; `monitor.ts` — проверки; `leads.ts` — подписки/дедуп/доставка; `format.ts` — заявка и общие
+хелперы; `profile.ts` — меню команд; `security.ts` — constant-time сравнение; `env.ts`,
+`lead-types.ts` — типы. Тесты бота идут без сети: `bot.handleUpdate` + перехват исходящих вызовов
+(`test/bot.test.ts`). Только erasable-синтаксис TS (без
 enum/namespace/parameter properties), импорты с `.ts`, `import type`, без `any`.
 
 Проверка: `npm ci && npm run typecheck && npm test` (`node --test` по `.ts`, Node >= 22.18).

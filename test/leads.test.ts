@@ -4,29 +4,8 @@ import { addRecent, deliverLead, isPermanentChatError, parseLead, shouldRetry, t
 import { isChatKey } from "../src/monitor.ts";
 import { bearerMatches, safeEqual } from "../src/security.ts";
 import type { LeadPayload } from "../src/lead-types.ts";
+import { fakeKv } from "./helpers.ts";
 
-// Minimal in-memory KV: just the surface leads.ts uses.
-function fakeKv(): KVNamespace {
-  const store = new Map<string, string>();
-  const kv = {
-    async get(key: string, type?: string) {
-      const v = store.get(key);
-      if (v === undefined) return null;
-      return type === "json" ? JSON.parse(v) : v;
-    },
-    async put(key: string, value: string) {
-      store.set(key, value);
-    },
-    async delete(key: string) {
-      store.delete(key);
-    },
-    async list({ prefix = "" }: { prefix?: string } = {}) {
-      const keys = [...store.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-      return { keys, list_complete: true };
-    },
-  };
-  return kv as unknown as KVNamespace;
-}
 
 const lead: LeadPayload = { id: 7, name: "Иван", phone: "+7 900 000-00-00" };
 

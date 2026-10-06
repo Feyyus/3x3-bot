@@ -1,97 +1,134 @@
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot, type Context } from "grammy";
+import type { UserFromGetMe } from "grammy/types";
 import type { Env } from "./env.ts";
 import { checkServerHealth, checkSites, type IncidentEntry } from "./monitor.ts";
 import { safeEqual } from "./security.ts";
 import { formatRecent } from "./format.ts";
-import { isSubscribed, recentLeads, subscribeChat, unsubscribeChat } from "./leads.ts";
+import { formatHistory, formatStatus } from "./messages.ts";
+import { CB, menuKeyboard, menuText, type MenuState } from "./ui.ts";
+import { leadsState, recentLeads, setLeadsState, subscribeChat } from "./leads.ts";
 
 export const HTML = { parse_mode: "HTML", link_preview_options: { is_disabled: true } } as const;
 
-function subscribeKeyboard(enabled: boolean): InlineKeyboard {
-  return new InlineKeyboard().text(
-    enabled ? "🔕 Отключить уведомления" : "🔔 Включить уведомления",
-    "toggle",
-  );
+type ChatId = number | string;
+
+async function loadState(env: Env, chatId: ChatId): Promise<MenuState> {
+  const [alerts, leads] = await Promise.all([env.SUBSCRIBERS.get(String(chatId)), leadsState(env.SUBSCRIBERS, chatId)]);
+  return { alerts: alerts !== "off", leads: leads === null ? null : leads === "on" };
 }
 
-export function createBot(env: Env): Bot {
-  const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
+async function showMenu(ctx: Context, env: Env, notice?: string): Promise<void> {
+  if (!ctx.chat) return;
+  const state = await loadState(env, ctx.chat.id);
+  await ctx.reply(menuText(state, notice), { ...HTML, reply_markup: menuKeyboard(state) });
+}
 
-  // По умолчанию — подписан на алерты. Отключить можно кнопкой, ничего не нужно вводить руками.
-  // `/start <код>` дополнительно подписывает на заявки с сайта; неверный код ведёт себя
-  // как обычный /start, чтобы не выдавать, что код вообще существует.
+// Re-render the menu in place; Telegram rejects an edit that changes nothing.
+async function refreshMenu(ctx: Context, env: Env): Promise<void> {
+  if (!ctx.chat) return;
+  const state = await loadState(env, ctx.chat.id);
+  try {
+    await ctx.editMessageText(menuText(state), { ...HTML, reply_markup: menuKeyboard(state) });
+  } catch (err) {
+    if (!/message is not modified/i.test(String((err as { description?: string })?.description ?? err))) throw err;
+  }
+}
+
+async function sendStatus(ctx: Context): Promise<void> {
+  const [results, health] = await Promise.all([checkSites(), checkServerHealth()]);
+  await ctx.reply(formatStatus(results, health), HTML);
+}
+
+async function sendHistory(ctx: Context, env: Env): Promise<void> {
+  const raw = await env.SUBSCRIBERS.get("history");
+  const list: IncidentEntry[] = raw ? JSON.parse(raw) : [];
+  await ctx.reply(formatHistory(list), HTML);
+}
+
+// Only for chats that entered the code; everyone else gets no reply.
+async function sendLastLeads(ctx: Context, env: Env): Promise<void> {
+  if (!ctx.chat || (await leadsState(env.SUBSCRIBERS, ctx.chat.id)) === null) return;
+  const messages = formatRecent(await recentLeads(env.SUBSCRIBERS));
+  if (messages.length === 0) {
+    await ctx.reply("Заявок пока нет.");
+    return;
+  }
+  for (const text of messages) await ctx.reply(text, HTML);
+}
+
+async function toggleAlerts(env: Env, chatId: ChatId): Promise<boolean> {
+  const wasOff = (await env.SUBSCRIBERS.get(String(chatId))) === "off";
+  await env.SUBSCRIBERS.put(String(chatId), wasOff ? "on" : "off");
+  return wasOff;
+}
+
+export function createBot(env: Env, botInfo?: UserFromGetMe): Bot {
+  const bot = new Bot(env.TELEGRAM_BOT_TOKEN, botInfo ? { botInfo } : undefined);
+
+  // Алерты включены по умолчанию. `/start <код>` дополнительно открывает заявки; неверный
+  // код ведёт себя как обычный /start, чтобы не выдавать, что код вообще существует.
   bot.command("start", async (ctx) => {
     const chatId = String(ctx.chat.id);
     const code = ctx.match.trim();
-    const leadsSubscribed = Boolean(code && env.LEADS_CODE && (await safeEqual(code, env.LEADS_CODE)));
-    if (leadsSubscribed) await subscribeChat(env.SUBSCRIBERS, chatId);
-
-    if ((await env.SUBSCRIBERS.get(chatId)) === null) {
-      await env.SUBSCRIBERS.put(chatId, "on");
-    }
-    const enabled = (await env.SUBSCRIBERS.get(chatId)) !== "off";
-    await ctx.reply(
-      "Слежу за 3x3.team и рабочей станцией. Раз в 10 минут проверяю тихо, " +
-        "пишу только если что-то упало. /history — последние инциденты.\n\nУведомления сейчас: " +
-        (enabled ? "включены ✅" : "выключены 🔕") +
-        (leadsSubscribed ? "\n\n📩 Заявки с сайта подключены. /lastleads — последние 5, /stop_leads — отключить." : ""),
-      { reply_markup: subscribeKeyboard(enabled) },
-    );
+    const unlocked = Boolean(code && env.LEADS_CODE && (await safeEqual(code, env.LEADS_CODE)));
+    if (unlocked) await subscribeChat(env.SUBSCRIBERS, chatId);
+    if ((await env.SUBSCRIBERS.get(chatId)) === null) await env.SUBSCRIBERS.put(chatId, "on");
+    await showMenu(ctx, env, unlocked ? "📩 Заявки с сайта подключены." : undefined);
   });
 
+  bot.command("menu", (ctx) => showMenu(ctx, env));
+  bot.command("status", (ctx) => sendStatus(ctx));
+  bot.command("history", (ctx) => sendHistory(ctx, env));
+
+  // Скрытые алиасы (в меню команд их нет, всё то же есть кнопками).
+  bot.command("lastleads", (ctx) => sendLastLeads(ctx, env));
   bot.command("stop_leads", async (ctx) => {
-    if (!(await isSubscribed(env.SUBSCRIBERS, ctx.chat.id))) return;
-    await unsubscribeChat(env.SUBSCRIBERS, ctx.chat.id);
-    await ctx.reply("Заявки с сайта отключены.");
-  });
-
-  // Только для подписанных: без кода бот про заявки молчит.
-  bot.command("lastleads", async (ctx) => {
-    if (!(await isSubscribed(env.SUBSCRIBERS, ctx.chat.id))) return;
-    const messages = formatRecent(await recentLeads(env.SUBSCRIBERS));
-    if (messages.length === 0) {
-      await ctx.reply("Заявок пока нет.");
-      return;
-    }
-    for (const text of messages) await ctx.reply(text, HTML);
-  });
-
-  bot.command("status", async (ctx) => {
-    const [results, health] = await Promise.all([checkSites(), checkServerHealth()]);
-    const lines = results.map((r) => `${r.ok ? "✅" : "⚠️"} ${r.url} — ${r.code}`);
-    lines.push(
-      health.ok
-        ? `✅ сервер — диск ${health.data?.disk_percent ?? "?"}%, память ${health.data?.mem_percent ?? "?"}%`
-        : `⚠️ сервер — ${health.reason ?? health.warnings?.join(", ")}`,
-    );
-    await ctx.reply(lines.join("\n"));
-  });
-
-  bot.command("history", async (ctx) => {
-    const raw = await env.SUBSCRIBERS.get("history");
-    const list: IncidentEntry[] = raw ? JSON.parse(raw) : [];
-    if (list.length === 0) {
-      await ctx.reply("Инцидентов пока не зафиксировано.");
-      return;
-    }
-    const last = list.slice(-10).reverse();
-    const lines = last.map((entry) => {
-      const parts: string[] = [];
-      for (const d of entry.down) parts.push(`${d.url} — ${d.code}`);
-      if (entry.health) parts.push(`рабочая станция — ${entry.health.reason}`);
-      return `🕒 ${entry.time}\n${parts.join("\n")}`;
-    });
-    await ctx.reply(`Последние ${last.length} инцидент(ов):\n\n${lines.join("\n\n")}`);
+    if ((await leadsState(env.SUBSCRIBERS, ctx.chat.id)) === null) return;
+    await setLeadsState(env.SUBSCRIBERS, ctx.chat.id, "off");
+    await ctx.reply("Заявки с сайта выключены. Включить обратно можно в /menu.");
   });
 
   bot.on("callback_query:data", async (ctx) => {
-    if (ctx.callbackQuery.data !== "toggle" || !ctx.chat) return;
-    const chatId = String(ctx.chat.id);
-    const wasOff = (await env.SUBSCRIBERS.get(chatId)) === "off";
-    await env.SUBSCRIBERS.put(chatId, wasOff ? "on" : "off");
-    const enabled = wasOff;
-    await ctx.editMessageReplyMarkup({ reply_markup: subscribeKeyboard(enabled) });
-    await ctx.answerCallbackQuery(enabled ? "Уведомления включены" : "Уведомления выключены");
+    const chat = ctx.chat;
+    if (!chat) return;
+    switch (ctx.callbackQuery.data) {
+      case CB.toggleAlerts:
+      case CB.legacyToggle: {
+        const on = await toggleAlerts(env, chat.id);
+        await refreshMenu(ctx, env);
+        await ctx.answerCallbackQuery(on ? "Алерты включены" : "Алерты выключены");
+        return;
+      }
+      case CB.toggleLeads: {
+        const state = await leadsState(env.SUBSCRIBERS, chat.id);
+        if (state === null) {
+          await ctx.answerCallbackQuery("Недоступно");
+          return;
+        }
+        await setLeadsState(env.SUBSCRIBERS, chat.id, state === "on" ? "off" : "on");
+        await refreshMenu(ctx, env);
+        await ctx.answerCallbackQuery(state === "on" ? "Заявки выключены" : "Заявки включены");
+        return;
+      }
+      case CB.menu:
+        await refreshMenu(ctx, env);
+        await ctx.answerCallbackQuery();
+        return;
+      case CB.lastLeads:
+        await ctx.answerCallbackQuery();
+        await sendLastLeads(ctx, env);
+        return;
+      case CB.status:
+        await ctx.answerCallbackQuery("Проверяю…");
+        await sendStatus(ctx);
+        return;
+      case CB.history:
+        await ctx.answerCallbackQuery();
+        await sendHistory(ctx, env);
+        return;
+      default:
+        await ctx.answerCallbackQuery();
+    }
   });
 
   return bot;

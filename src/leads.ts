@@ -54,18 +54,37 @@ export function isPermanentChatError(err: unknown): boolean {
   return code === 400 && /chat not found|group chat was deleted|bot was kicked|bot was blocked|user is deactivated/.test(text);
 }
 
-export async function subscribeChat(kv: KVNamespace, chatId: number | string): Promise<void> {
-  await kv.put(chatKey(chatId), "1");
+// A chat that entered the code is "authorized" for leads: key present, value "on"
+// (receives leads) or "off" (muted, but can switch back on without the code).
+// Legacy value "1" counts as on. A missing key = no access.
+export type LeadsState = "on" | "off";
+
+export async function leadsState(kv: KVNamespace, chatId: number | string): Promise<LeadsState | null> {
+  const v = await kv.get(chatKey(chatId));
+  if (v === null) return null;
+  return v === "off" ? "off" : "on";
 }
 
+export async function setLeadsState(kv: KVNamespace, chatId: number | string, state: LeadsState): Promise<void> {
+  await kv.put(chatKey(chatId), state);
+}
+
+// Entering the code authorizes the chat and turns leads on.
+export async function subscribeChat(kv: KVNamespace, chatId: number | string): Promise<void> {
+  await setLeadsState(kv, chatId, "on");
+}
+
+// Revokes access entirely (used when Telegram says the chat is gone).
 export async function unsubscribeChat(kv: KVNamespace, chatId: number | string): Promise<void> {
   await kv.delete(chatKey(chatId));
 }
 
+// Authorized, whether currently on or muted.
 export async function isSubscribed(kv: KVNamespace, chatId: number | string): Promise<boolean> {
-  return (await kv.get(chatKey(chatId))) !== null;
+  return (await leadsState(kv, chatId)) !== null;
 }
 
+// Chats that should receive leads right now (authorized and not muted).
 export async function subscribedChats(kv: KVNamespace): Promise<string[]> {
   const ids: string[] = [];
   let cursor: string | undefined;
@@ -74,7 +93,8 @@ export async function subscribedChats(kv: KVNamespace): Promise<string[]> {
     for (const key of page.keys) ids.push(key.name.slice(CHAT_PREFIX.length));
     cursor = page.list_complete ? undefined : page.cursor;
   } while (cursor);
-  return ids;
+  const states = await Promise.all(ids.map((id) => leadsState(kv, id)));
+  return ids.filter((_, i) => states[i] === "on");
 }
 
 export async function recentLeads(kv: KVNamespace): Promise<LeadPayload[]> {

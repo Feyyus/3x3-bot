@@ -20,8 +20,17 @@ export function formatMoscowTime(iso: string): string {
   return `${p(d.getUTCDate())}.${p(d.getUTCMonth() + 1)} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())} МСК`;
 }
 
+// Shared message skeleton: `icon <b>Title</b> · suffix`, then `icon text` lines.
+// Callers pass already-escaped text.
+export const header = (icon: string, title: string, suffix?: string): string =>
+  `${icon} <b>${escapeHtml(title)}</b>${suffix ? ` · ${escapeHtml(suffix)}` : ""}`;
+
+export const row = (icon: string, escapedText: string): string => `${icon} ${escapedText}`;
+
+export const nowMoscow = (): string => formatMoscowTime(new Date().toISOString());
+
 export function formatLead(lead: LeadPayload, { maxMessage = MAX_MESSAGE }: { maxMessage?: number } = {}): string {
-  const lines = ["📩 <b>Заявка с сайта</b> · 3x3", "#site"];
+  const lines = [header("📩", "Заявка с сайта", "3x3"), "#site"];
   if (lead.name) lines.push(`👤 ${escapeHtml(lead.name)}`);
   if (lead.phone) lines.push(`📞 ${escapeHtml(lead.phone)}`);
   if (lead.email) lines.push(`✉️ ${escapeHtml(lead.email)}`);
