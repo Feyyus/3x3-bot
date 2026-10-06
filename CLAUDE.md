@@ -1,19 +1,44 @@
-# 3x3 uptime bot
+# 3x3 bot
 
-Telegram bot (grammY) on Cloudflare Workers. Cron every 10 min: checks
-3x3.team + ecom-landing reachability and the workstation's `status.json`
-(disk usage), DMs subscribed chats only on failure. `/history` shows the
-last 30 incidents (kept in KV). Retries transient network blips (2 tries,
-300/800ms) before flagging an outage — see the comment in `src/index.js`.
+Общий Telegram-бот сайта 3x3.team (grammY на Cloudflare Workers, TypeScript).
+Две задачи:
 
-- `SUBSCRIBERS` KV — chat subscribe state + `history` key (JSON array).
-- `TELEGRAM_BOT_TOKEN` — Worker secret (`wrangler secret put`), not in repo.
+- **Аптайм.** Cron раз в 10 минут проверяет 3x3.team + ecom-landing и `status.json`
+  рабочей станции (диск), пишет подписанным чатам только при сбое. `/history` — последние
+  30 инцидентов (в KV). Транзиентные сетевые блипы ретраятся (2 попытки, 300/800 мс) до того,
+  как считаться падением — см. комментарии в `src/monitor.ts`. Алерты включены у любого,
+  кто нажал `/start`.
+- **Заявки с сайта.** Laravel (`3x3-site-laravel`, джоба `SendLeadToTelegram`) шлёт
+  `POST /lead` с `Authorization: Bearer <RELAY_SECRET>`; Worker сохраняет заявку и рассылает
+  подписанным чатам. Подписка **только по секретному коду**: `/start <LEADS_CODE>` (в заявках
+  телефоны). `/lastleads` — последние 5, `/stop_leads` — отписка. Повтор той же заявки
+  дедуплицируется по id (`leads:sent:<id>:<chat>`). Если подписчики есть, но доставка не
+  удалась из-за Telegram — отвечает 502, и Laravel повторяет.
+
+`staffing-leads` — отдельный сервис со своим ботом, с этим Worker-ом не связан.
+
+## Структура
+
+`src/index.ts` — роутинг и cron; `bot.ts` — команды; `monitor.ts` — проверки; `leads.ts` —
+подписки/дедуп/доставка; `format.ts` — HTML-сообщения; `security.ts` — constant-time
+сравнение; `env.ts`, `lead-types.ts` — типы. Только erasable-синтаксис TS (без
+enum/namespace/parameter properties), импорты с `.ts`, `import type`, без `any`.
+
+Проверка: `npm ci && npm run typecheck && npm test` (`node --test` по `.ts`, Node >= 22.18).
+
+## KV и секреты
+
+- `SUBSCRIBERS` KV: голые числовые ключи (chat id) = подписка на алерты (`on`/`off`),
+  `history` = JSON инцидентов, `leads:chat:<id>` = подписка на заявки, `leads:recent` = последние 20,
+  `leads:sent:*` = дедуп (TTL 2 суток). Cron шлёт алерты только на ключи вида `-?\d+`.
+- Secrets (`wrangler secret put`, не в репо): `TELEGRAM_BOT_TOKEN`, `RELAY_SECRET`, `LEADS_CODE`.
+  Локально — `.dev.vars` (в `.gitignore`).
 
 ## Deploy
 
-**Via GitHub Actions, not manually.** Push to `master` (touching `src/**`,
-`wrangler.toml`, or `package.json`) triggers `.github/workflows/deploy.yml`,
-which runs `wrangler deploy` using the `CLOUDFLARE_API_TOKEN` repo secret.
+**Via GitHub Actions, not manually.** Push to `master` (touching `src/**`, `test/**`,
+`wrangler.toml`, `tsconfig.json` or `package.json`) triggers `.github/workflows/deploy.yml`:
+typecheck + тесты, затем `wrangler deploy` с секретом `CLOUDFLARE_API_TOKEN`.
 Don't run `wrangler deploy`/`npm run deploy` from a local machine — it'll
 still work (same Worker), but then the deployed code and git history can
 drift out of sync silently. If you must deploy from local (CI down, urgent
