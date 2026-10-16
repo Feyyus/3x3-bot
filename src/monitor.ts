@@ -23,6 +23,7 @@ export interface SiteResult {
   code: string;
   attempts: number;
   elapsedMs: number;
+  tries?: Attempt[];
 }
 
 export interface StatusData {
@@ -39,7 +40,10 @@ export interface HealthResult {
   elapsedMs?: number;
 }
 
-interface Attempt {
+// `at` — момент старта попытки (UTC ISO): по нему попытку можно найти в
+// nginx access.log сервера (там тоже UTC) и понять, долетел ли запрос.
+export interface Attempt {
+  at: string;
   ok: boolean;
   code: string;
   elapsedMs: number;
@@ -71,6 +75,7 @@ export function classifyError(err: unknown): string {
 
 async function fetchSiteOnce(url: string): Promise<Attempt> {
   const started = Date.now();
+  const at = new Date(started).toISOString();
   try {
     const res = await fetch(url, {
       method: "GET",
@@ -84,12 +89,13 @@ async function fetchSiteOnce(url: string): Promise<Attempt> {
     const isRedirect = res.status >= 300 && res.status < 400;
     const location = isRedirect ? res.headers.get("location") : null;
     return {
+      at,
       ok: res.status >= 200 && res.status < 300,
       code: location ? `${res.status} -> ${location}` : String(res.status),
       elapsedMs: Date.now() - started,
     };
   } catch (err) {
-    return { ok: false, code: classifyError(err), elapsedMs: Date.now() - started };
+    return { at, ok: false, code: classifyError(err), elapsedMs: Date.now() - started };
   }
 }
 
@@ -107,7 +113,7 @@ async function checkOneSite(url: string): Promise<SiteResult> {
   if (!last.ok || recovered) {
     console.log(
       `[check] ${url}`,
-      JSON.stringify(attempts.map((a) => ({ ok: a.ok, code: a.code, ms: a.elapsedMs }))),
+      JSON.stringify(attempts.map((a) => ({ at: a.at, ok: a.ok, code: a.code, ms: a.elapsedMs }))),
     );
   }
   return {
@@ -116,6 +122,7 @@ async function checkOneSite(url: string): Promise<SiteResult> {
     code: recovered ? `${last.code} (ожил после ${attempts.length} попыт${attempts.length === 2 ? "ки" : "ок"})` : last.code,
     attempts: attempts.length,
     elapsedMs: last.elapsedMs,
+    tries: attempts,
   };
 }
 
@@ -156,7 +163,7 @@ export async function checkServerHealth(): Promise<HealthResult> {
 
 export interface IncidentEntry {
   time: string;
-  down: { url: string; code: string; attempts: number }[];
+  down: { url: string; code: string; attempts: number; tries?: Attempt[] }[];
   health: { reason?: string; attempts: number } | null;
 }
 
@@ -165,7 +172,7 @@ export interface IncidentEntry {
 export async function logIncident(env: Env, down: SiteResult[], health: HealthResult): Promise<void> {
   const entry: IncidentEntry = {
     time: new Date().toISOString(),
-    down: down.map((r) => ({ url: r.url, code: r.code, attempts: r.attempts })),
+    down: down.map((r) => ({ url: r.url, code: r.code, attempts: r.attempts, tries: r.tries })),
     health: health.ok ? null : { reason: health.reason ?? health.warnings?.join(", "), attempts: health.attempts },
   };
   const raw = await env.SUBSCRIBERS.get("history");
