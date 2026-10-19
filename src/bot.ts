@@ -3,7 +3,15 @@ import type { UserFromGetMe } from "grammy/types";
 import type { Env } from "./env.ts";
 import { checkServerHealth, checkSites, type IncidentEntry } from "./monitor.ts";
 import { safeEqual } from "./security.ts";
-import { formatRecent } from "./format.ts";
+import { formatRecent, header } from "./format.ts";
+import {
+  formatPaymentReminder,
+  isKnownInvoice,
+  markPaid,
+  PAID_PREFIX,
+  paymentKeyboard,
+  unpaidInvoices,
+} from "./billing.ts";
 import { formatHistory, formatStatus } from "./messages.ts";
 import { CB, menuKeyboard, menuText, type MenuState } from "./ui.ts";
 import { leadsState, setLeadsState, subscribeChat } from "./leads.ts";
@@ -104,7 +112,25 @@ export function createBot(env: Env, botInfo?: UserFromGetMe, fetchLeads: FetchLe
   bot.on("callback_query:data", async (ctx) => {
     const chat = ctx.chat;
     if (!chat) return;
-    switch (ctx.callbackQuery.data) {
+    const data = ctx.callbackQuery.data;
+    if (data.startsWith(PAID_PREFIX)) {
+      const id = data.slice(PAID_PREFIX.length);
+      if (!isKnownInvoice(id)) {
+        await ctx.answerCallbackQuery();
+        return;
+      }
+      await markPaid(env.SUBSCRIBERS, id);
+      const unpaid = await unpaidInvoices(env.SUBSCRIBERS);
+      const text = formatPaymentReminder(unpaid) ?? `${header("✅", "Всё оплачено", "хостинг")}\nНапоминаний больше не будет.`;
+      try {
+        await ctx.editMessageText(text, { ...HTML, reply_markup: paymentKeyboard(unpaid) });
+      } catch (err) {
+        if (!/message is not modified/i.test(String((err as { description?: string })?.description ?? err))) throw err;
+      }
+      await ctx.answerCallbackQuery(`Счёт ${id} отмечен оплаченным`);
+      return;
+    }
+    switch (data) {
       case CB.toggleAlerts:
       case CB.legacyToggle: {
         const on = await toggleAlerts(env, chat.id);

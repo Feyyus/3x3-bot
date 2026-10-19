@@ -1,4 +1,4 @@
-import { webhookCallback } from "grammy";
+import { webhookCallback, type InlineKeyboard } from "grammy";
 import type { Env } from "./env.ts";
 import { createBot, HTML } from "./bot.ts";
 import { checkServerHealth, checkSites, isChatKey, logIncident } from "./monitor.ts";
@@ -6,6 +6,7 @@ import { deliverLead, parseLead, shouldRetry } from "./leads.ts";
 import { bearerMatches } from "./security.ts";
 import { formatAlert } from "./messages.ts";
 import { ensureProfile } from "./profile.ts";
+import { formatPaymentReminder, isReminderTick, paymentKeyboard, unpaidInvoices } from "./billing.ts";
 
 const MAX_BODY_BYTES = 16 * 1024;
 
@@ -47,6 +48,27 @@ async function handleLead(request: Request, env: Env): Promise<Response> {
   return json(200, { ok: true, delivered: result.delivered });
 }
 
+// Рассылка всем чатам с включёнными алертами.
+async function broadcast(env: Env, text: string, replyMarkup?: InlineKeyboard): Promise<void> {
+  const list = await env.SUBSCRIBERS.list();
+  for (const key of list.keys) {
+    if (!isChatKey(key.name)) continue;
+    const val = await env.SUBSCRIBERS.get(key.name);
+    if (val === "off") continue;
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: key.name,
+        text,
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+        reply_markup: replyMarkup,
+      }),
+    });
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -57,8 +79,14 @@ export default {
   },
 
   // Cron trigger — раз в 10 минут, молча если всё ок, шлёт всем подписанным при падении.
-  async scheduled(_event: ScheduledController, env: Env): Promise<void> {
+  async scheduled(event: ScheduledController, env: Env): Promise<void> {
     await ensureProfile(env);
+
+    if (isReminderTick(event.scheduledTime)) {
+      const unpaid = await unpaidInvoices(env.SUBSCRIBERS);
+      const reminder = formatPaymentReminder(unpaid);
+      if (reminder) await broadcast(env, reminder, paymentKeyboard(unpaid));
+    }
 
     const [results, health] = await Promise.all([checkSites(), checkServerHealth()]);
     const down = results.filter((r) => !r.ok);
@@ -76,18 +104,6 @@ export default {
 
     await logIncident(env, down, health);
 
-    const text = formatAlert(down, health);
-
-    const list = await env.SUBSCRIBERS.list();
-    for (const key of list.keys) {
-      if (!isChatKey(key.name)) continue;
-      const val = await env.SUBSCRIBERS.get(key.name);
-      if (val === "off") continue;
-      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: key.name, text, parse_mode: "HTML", link_preview_options: { is_disabled: true } }),
-      });
-    }
+    await broadcast(env, formatAlert(down, health));
   },
 } satisfies ExportedHandler<Env>;

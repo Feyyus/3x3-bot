@@ -206,3 +206,20 @@ test("ensureProfile sets the command menu once per version", async () => {
 
   assert.deepEqual(COMMANDS.map((c) => c.command), ["menu", "status", "history"]);
 });
+
+test("кнопка «Счёт оплачен» помечает счёт в KV и убирает его из напоминания", async () => {
+  const h = harness();
+  await h.press("paid:1547266");
+  assert.equal(await h.kv.get("billing:paid:1547266"), "1");
+  const edit = h.last("editMessageText");
+  assert.doesNotMatch(String(edit?.payload.text), /1547266/);
+  assert.match(String(edit?.payload.text), /1563407/);
+  await h.press("paid:1563407");
+  assert.match(String(h.last("editMessageText")?.payload.text), /Напоминаний больше не будет/);
+});
+
+test("paid: с неизвестным id ничего не пишет в KV", async () => {
+  const h = harness();
+  await h.press("paid:999");
+  assert.equal(await h.kv.get("billing:paid:999"), null);
+});
