@@ -8,8 +8,8 @@ export interface Invoice {
   due: string; // YYYY-MM-DD
 }
 
-// Счета хостинга VPS. Новый счёт — добавить строку и задеплоить. Бот раз в день
-// (09:00 МСК) напоминает о тех, что не подтверждены кнопкой «Оплачен».
+// Счета хостинга VPS. Новый счёт — добавить строку и задеплоить. Бот дважды в день
+// (10:00 и 16:00 МСК) напоминает о тех, что не подтверждены кнопкой «Оплачен».
 export const UNPAID_INVOICES: Invoice[] = [
   { id: "1547266", name: "Основной сервер", amount: 799, due: "2026-10-17" },
   { id: "1563407", name: "VPN", amount: 499, due: "2026-10-22" },
@@ -56,8 +56,11 @@ export function paymentKeyboard(invoices: Invoice[]): InlineKeyboard {
   return kb;
 }
 
-// Cron идёт раз в 10 минут: напоминаем в окне 06:00–06:09 UTC (09:00 МСК), т.е. раз в сутки.
+// Cron идёт раз в 10 минут: напоминаем в окнах 07:00–07:09 и 13:00–13:09 UTC
+// (10:00 и 16:00 МСК), т.е. два раза в сутки.
+const REMINDER_HOURS_UTC = [7, 13];
+
 export const isReminderTick = (scheduledTime: number): boolean => {
   const d = new Date(scheduledTime);
-  return d.getUTCHours() === 6 && d.getUTCMinutes() < 10;
+  return REMINDER_HOURS_UTC.includes(d.getUTCHours()) && d.getUTCMinutes() < 10;
 };

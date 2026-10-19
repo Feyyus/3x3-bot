@@ -20,8 +20,9 @@ test("no invoices -> no reminder", () => {
   assert.equal(formatPaymentReminder([]), null);
 });
 
-test("reminder fires only in the 09:00 MSK tick", () => {
-  assert.equal(isReminderTick(Date.parse("2026-10-20T06:00:00Z")), true);
-  assert.equal(isReminderTick(Date.parse("2026-10-20T06:10:00Z")), false);
-  assert.equal(isReminderTick(Date.parse("2026-10-20T07:00:00Z")), false);
+test("reminder fires only in the 10:00 and 16:00 MSK ticks", () => {
+  assert.equal(isReminderTick(Date.parse("2026-10-20T07:00:00Z")), true);
+  assert.equal(isReminderTick(Date.parse("2026-10-20T13:00:00Z")), true);
+  assert.equal(isReminderTick(Date.parse("2026-10-20T07:10:00Z")), false);
+  assert.equal(isReminderTick(Date.parse("2026-10-20T06:00:00Z")), false);
 });
